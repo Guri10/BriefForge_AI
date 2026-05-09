@@ -1,0 +1,25 @@
+services:
+  mcp-news-server:
+    build: ./services/mcp-news-server
+    ports:
+      - "8001:8001"
+
+  agent-service:
+    build: ./services/agent-service
+    environment:
+      MCP_NEWS_SERVER_URL: http://mcp-news-server:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mcp-news-server
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_AGENT_SERVICE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - agent-service

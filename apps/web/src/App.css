@@ -1,0 +1,59 @@
+.app {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.header {
+  margin-bottom: 1.75rem;
+}
+
+.header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.tagline {
+  margin: 0;
+  color: var(--muted, #5c5c5c);
+  font-size: 0.95rem;
+}
+
+.panel {
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border, #e2e2e2);
+  border-radius: 8px;
+  background: var(--panel, #fafafa);
+  text-align: left;
+}
+
+.panel h2 {
+  margin: 0 0 0.65rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #5c5c5c);
+}
+
+.list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.list code {
+  font-size: 0.88em;
+}
+
+.mono {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
