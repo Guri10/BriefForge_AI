@@ -1,4 +1,4 @@
-"""Agent service: routes chat to mcp-news-server over HTTP only (no LangChain)."""
+"""Agent service: LangChain + OpenAI tool-calling to mcp-news-server over HTTP only."""
 
 from __future__ import annotations
 
@@ -12,6 +12,14 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from agent_runner import run_agent_turn
+from mcp_client import (
+    articles_from_response,
+    extract_sources,
+    mcp_search_news,
+    mcp_top_headlines,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +61,18 @@ def _strip_top_query(text: str) -> str:
     return q or "news"
 
 
+def route_intent(message: str) -> tuple[str, dict[str, Any]]:
+    """Keyword routing for OpenAI failure fallback only."""
+    text = message.strip()
+    lower = text.lower()
+
+    if _wants_top_headlines(lower):
+        q = _strip_top_query(text)
+        return "top_headlines", {"q": q, "page_size": 10}
+
+    return "search_news", {"query": text or "news", "page_size": 10}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S) as client:
@@ -63,7 +83,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BriefForge Agent Service",
     description="Agent + briefing API. Calls mcp-news-server only for news data.",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -83,79 +103,6 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
 
 
-def route_intent(message: str) -> tuple[str, dict[str, Any]]:
-    """Pick MCP tool + JSON body from user text."""
-    text = message.strip()
-    lower = text.lower()
-
-    if _wants_top_headlines(lower):
-        q = _strip_top_query(text)
-        return "top_headlines", {"q": q, "page_size": 10}
-
-    return "search_news", {"query": text or "news", "page_size": 10}
-
-
-async def mcp_search_news(
-    client: httpx.AsyncClient,
-    base: str,
-    body: dict[str, Any],
-) -> tuple[dict[str, Any] | None, int, str | None]:
-    url = f"{base}/v1/tools/search_news"
-    return await _post_mcp(client, url, body)
-
-
-async def mcp_top_headlines(
-    client: httpx.AsyncClient,
-    base: str,
-    body: dict[str, Any],
-) -> tuple[dict[str, Any] | None, int, str | None]:
-    url = f"{base}/v1/tools/top_headlines"
-    return await _post_mcp(client, url, body)
-
-
-async def _post_mcp(
-    client: httpx.AsyncClient,
-    url: str,
-    body: dict[str, Any],
-) -> tuple[dict[str, Any] | None, int, str | None]:
-    try:
-        resp = await client.post(url, json=body)
-    except httpx.RequestError as exc:
-        logger.warning("mcp request failed url=%s err=%s", url, type(exc).__name__)
-        return None, 0, str(exc)
-    try:
-        data = resp.json()
-    except ValueError:
-        return None, resp.status_code, "Invalid JSON from mcp-news-server"
-    return data, resp.status_code, None
-
-
-def _articles_from_response(data: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not data:
-        return []
-    raw = data.get("articles")
-    if not isinstance(raw, list):
-        return []
-    return [a for a in raw if isinstance(a, dict)]
-
-
-def extract_sources(articles: list[dict[str, Any]], limit: int = 15) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = []
-    for art in articles[:limit]:
-        url = (art.get("url") or "").strip()
-        if not url:
-            continue
-        sources.append(
-            {
-                "title": art.get("title"),
-                "url": url,
-                "source_name": art.get("source_name"),
-                "published_at": art.get("published_at"),
-            }
-        )
-    return sources
-
-
 def format_brief(
     tool: str,
     article_count: int,
@@ -168,7 +115,7 @@ def format_brief(
         return f"Request to {tool} did not complete successfully."
     if article_count == 0:
         return f"No articles returned from {tool} for this query."
-    return f"Retrieved {article_count} article(s) via {tool} (template brief — no LLM yet)."
+    return f"Retrieved {article_count} article(s) via {tool} (keyword fallback — no LLM)."
 
 
 def format_reply_markdown(
@@ -214,20 +161,12 @@ def _one_tool_call(
     }
 
 
-@app.get("/health")
-def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "service": "agent-service",
-        "mcp_news_server_url": _mcp_base,
-    }
-
-
-@app.post("/v1/chat")
-async def chat(body: ChatRequest) -> dict[str, Any]:
-    client: httpx.AsyncClient = app.state.http
-    tool, payload = route_intent(body.message)
-
+async def _keyword_fallback_response(
+    client: httpx.AsyncClient,
+    message: str,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    tool, payload = route_intent(message)
     if tool == "search_news":
         data, status, transport_err = await mcp_search_news(client, _mcp_base, payload)
         mcp_path = "/v1/tools/search_news"
@@ -242,27 +181,21 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
             meta = maybe
 
     if transport_err:
-        err = f"Could not reach mcp-news-server: {transport_err}"
+        err = (
+            f"fallback:keyword_routing ({fallback_reason[:120]}) | mcp: {transport_err}"
+        )
         return {
-            "reply_markdown": format_reply_markdown(tool, [], False, err),
-            "brief": format_brief(tool, 0, False, err),
+            "reply_markdown": format_reply_markdown(tool, [], False, transport_err),
+            "brief": format_brief(tool, 0, False, transport_err),
             "sources": [],
             "trace": {
                 "tool_calls": [
-                    _one_tool_call(
-                        tool,
-                        mcp_path,
-                        payload,
-                        status,
-                        {},
-                        0,
-                        err,
-                    )
+                    _one_tool_call(tool, mcp_path, payload, status, {}, 0, err),
                 ]
             },
         }
 
-    articles = _articles_from_response(data)
+    articles = articles_from_response(data)
     http_ok = 200 <= status < 300
     err_detail: str | None = None
     if not http_ok:
@@ -272,6 +205,9 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
         else:
             err_detail = f"mcp-news-server returned HTTP {status}"
 
+    fb = f"fallback:keyword_routing ({fallback_reason[:180]})"
+    trace_error = fb + (f" | mcp: {err_detail}" if err_detail else "")
+
     sources = extract_sources(articles)
     brief = format_brief(tool, len(articles), http_ok, err_detail if not http_ok else None)
     reply_md = format_reply_markdown(
@@ -280,7 +216,6 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
         http_ok,
         err_detail if not http_ok else None,
     )
-    call_err = err_detail if not http_ok else None
 
     return {
         "reply_markdown": reply_md,
@@ -295,8 +230,36 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
                     status,
                     meta,
                     len(articles),
-                    call_err,
+                    trace_error,
                 )
             ]
         },
     }
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "agent-service",
+        "mcp_news_server_url": _mcp_base,
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+    }
+
+
+@app.post("/v1/chat")
+async def chat(body: ChatRequest) -> dict[str, Any]:
+    client: httpx.AsyncClient = app.state.http
+
+    try:
+        result = await run_agent_turn(client, _mcp_base, body.message)
+        return {
+            "reply_markdown": result.reply_markdown,
+            "brief": result.brief,
+            "sources": extract_sources(result.articles),
+            "trace": {"tool_calls": result.tool_calls},
+        }
+    except Exception as exc:
+        logger.exception("openai agent failed; keyword fallback")
+        reason = f"{type(exc).__name__}: {exc!s}"[:240]
+        return await _keyword_fallback_response(client, body.message, reason)

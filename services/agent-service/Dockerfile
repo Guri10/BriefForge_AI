@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY main.py mcp_client.py news_tools.py agent_runner.py .
 
 ENV MCP_NEWS_SERVER_URL=http://mcp-news-server:8001
 
