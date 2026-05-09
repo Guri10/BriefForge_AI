@@ -3,13 +3,17 @@ services:
     build: ./services/mcp-news-server
     ports:
       - "8001:8001"
+    environment:
+      NEWSAPI_API_KEY: ${NEWSAPI_API_KEY}
 
   agent-service:
     build: ./services/agent-service
-    environment:
-      MCP_NEWS_SERVER_URL: http://mcp-news-server:8001
     ports:
       - "8000:8000"
+    environment:
+      MCP_NEWS_SERVER_URL: http://mcp-news-server:8001
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
     depends_on:
       - mcp-news-server
 
@@ -18,7 +22,7 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
       args:
-        VITE_AGENT_SERVICE_URL: http://localhost:8000
+        VITE_AGENT_BASE_URL: ${VITE_AGENT_BASE_URL:-http://localhost:8000}
     ports:
       - "5173:80"
     depends_on:

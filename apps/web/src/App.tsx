@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import './App.css'
 
 const agentBase =
-  import.meta.env.VITE_AGENT_SERVICE_URL ?? 'http://localhost:8000'
+  import.meta.env.VITE_AGENT_BASE_URL ?? 'http://localhost:8000'
 
 function App() {
   const [agentHealth, setAgentHealth] = useState<string | null>(null)
